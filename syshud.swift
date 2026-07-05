@@ -2,6 +2,7 @@
 // Build: ./build.sh   Run: ./syshud &   Stop: pkill syshud
 // `./syshud --sample` prints one stats line and exits (test harness).
 
+import AppKit
 import Foundation
 import IOKit
 
@@ -114,9 +115,104 @@ final class StatsSampler {
     }
 }
 
-// MARK: - Entry point (temporary CLI-only version; overlay added next)
+// MARK: - Overlay window
 
-let sampler = StatsSampler()
-_ = sampler.cpuPercent()               // prime CPU tick baseline
-Thread.sleep(forTimeInterval: 1.0)     // measure CPU over one second
-print(sampler.line())
+enum OverlayMode {
+    case back   // desktop level: above wallpaper/icons, behind normal windows
+    case front  // above everything, including full-screen apps
+}
+
+final class OverlayController {
+    private let sampler = StatsSampler()
+    private let window: NSWindow
+    private let label: NSTextField
+    private var timer: Timer?
+
+    init(mode: OverlayMode) {
+        label = NSTextField(labelWithString: "CPU –   GPU –   RAM –")
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.85)
+        shadow.shadowBlurRadius = 2
+        shadow.shadowOffset = NSSize(width: 0, height: -1)
+        label.shadow = shadow
+
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 20),
+                          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        switch mode {
+        case .back:
+            window.level = NSWindow.Level(
+                rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        case .front:
+            window.level = .screenSaver
+        }
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary,
+                                     .fullScreenAuxiliary, .ignoresCycle]
+        window.contentView = label
+    }
+
+    func start() {
+        _ = sampler.cpuPercent()  // prime CPU tick baseline
+        layout()
+        window.orderFrontRegardless()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.layout() }
+    }
+
+    private func refresh() {
+        label.stringValue = sampler.line()
+        layout()
+    }
+
+    // Pin the window to the top-right of the main screen, just under the
+    // menu bar (visibleFrame already excludes it).
+    private func layout() {
+        label.sizeToFit()
+        let size = label.frame.size
+        guard let screen = NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        let origin = NSPoint(x: vf.maxX - size.width - 12,
+                             y: vf.maxY - size.height - 6)
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+}
+
+// MARK: - Entry point
+
+var mode = OverlayMode.back            // default: behind windows
+for arg in CommandLine.arguments.dropFirst() {
+    switch arg {
+    case "--sample":
+        let sampler = StatsSampler()
+        _ = sampler.cpuPercent()           // prime CPU tick baseline
+        Thread.sleep(forTimeInterval: 1.0) // measure CPU over one second
+        print(sampler.line())
+        exit(0)
+    case "back", "--back":
+        mode = .back
+    case "front", "--front":
+        mode = .front
+    default:
+        FileHandle.standardError.write(
+            "syshud: unknown argument '\(arg)'\nusage: syshud [back|front|--sample]\n"
+                .data(using: .utf8)!)
+        exit(2)
+    }
+}
+
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)   // no Dock icon, no menu bar, no focus
+let controller = OverlayController(mode: mode)
+controller.start()
+app.run()
