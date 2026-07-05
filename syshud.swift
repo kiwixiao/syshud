@@ -127,8 +127,10 @@ final class OverlayController {
     private let window: NSWindow
     private let label: NSTextField
     private var timer: Timer?
+    private var mode: OverlayMode
 
     init(mode: OverlayMode) {
+        self.mode = mode
         label = NSTextField(labelWithString: "CPU –   GPU –   RAM –")
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         label.textColor = .white
@@ -143,6 +145,21 @@ final class OverlayController {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary,
+                                     .fullScreenAuxiliary, .ignoresCycle]
+        window.contentView = label
+        applyLevel()
+    }
+
+    // Live-switch between front and back (triggered by SIGUSR1).
+    func toggleMode() {
+        mode = (mode == .back) ? .front : .back
+        applyLevel()
+        window.orderFrontRegardless()
+    }
+
+    private func applyLevel() {
         switch mode {
         case .back:
             window.level = NSWindow.Level(
@@ -150,10 +167,6 @@ final class OverlayController {
         case .front:
             window.level = .screenSaver
         }
-        window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary,
-                                     .fullScreenAuxiliary, .ignoresCycle]
-        window.contentView = label
     }
 
     func start() {
@@ -203,9 +216,32 @@ for arg in CommandLine.arguments.dropFirst() {
         mode = .back
     case "front", "--front":
         mode = .front
+    case "toggle", "--toggle":
+        // Signal the running overlay to flip front/back; exclude our own
+        // pid — this toggler process is also named "syshud".
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        task.arguments = ["-x", "syshud"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        try? task.run()
+        task.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                         encoding: .utf8) ?? ""
+        let others = out.split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0) }
+            .filter { $0 != getpid() }
+        guard !others.isEmpty else {
+            FileHandle.standardError.write(
+                "syshud: no running overlay to toggle\n".data(using: .utf8)!)
+            exit(1)
+        }
+        for pid in others { kill(pid, SIGUSR1) }
+        print("syshud: toggled front/back (pid \(others.map(String.init).joined(separator: ", ")))")
+        exit(0)
     default:
         FileHandle.standardError.write(
-            "syshud: unknown argument '\(arg)'\nusage: syshud [back|front|--sample]\n"
+            "syshud: unknown argument '\(arg)'\nusage: syshud [back|front|toggle|--sample]\n"
                 .data(using: .utf8)!)
         exit(2)
     }
@@ -215,4 +251,13 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)   // no Dock icon, no menu bar, no focus
 let controller = OverlayController(mode: mode)
 controller.start()
+
+// SIGUSR1 flips front/back live (sent by `syshud toggle`). The raw C
+// handler must be SIG_IGN so the DispatchSource receives the signal and
+// delivers it on the main queue, where AppKit calls are safe.
+signal(SIGUSR1, SIG_IGN)
+let toggleSignal = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+toggleSignal.setEventHandler { controller.toggleMode() }
+toggleSignal.resume()
+
 app.run()

@@ -20,6 +20,7 @@ top-right of your screen:
 - The cheat sheet (run from `~/monitoring`):
 
 ```bash
+./syshud toggle                # live-switch the running overlay front <-> back
 ./autostart.sh status          # is auto-start installed? is syshud running?
 pkill syshud                   # hide the overlay until next login
 ./autostart.sh install front   # (re)start now + keep front mode at login
@@ -53,6 +54,17 @@ pkill syshud
 | `./syshud front &` | **front** | Text floats **above every window**, including full-screen apps, and follows you across Spaces. Clicks still pass straight through it. |
 
 `back`/`--back` and `front`/`--front` are both accepted.
+
+### Live switching
+
+```bash
+./syshud toggle
+```
+
+Flips the **running** overlay between front and back instantly — no restart,
+the stats keep updating. (Equivalent: `pkill -USR1 -x syshud`.) The toggle
+only affects the current session; the mode used at login stays whatever
+`./autostart.sh install <mode>` set.
 
 ## Start automatically at login
 
