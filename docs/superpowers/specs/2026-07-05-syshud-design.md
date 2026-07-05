@@ -12,7 +12,12 @@ Dock icon and no menu bar icon. No paid Apple Developer account required.
 
 ## Requirements (user-confirmed)
 
-- Overlay text is **always on top** of all windows, including full-screen apps.
+- Two layering modes, chosen by a launch argument:
+  - **`back` (default)** — text sits at desktop level, just above the
+    wallpaper and desktop icons, **behind all normal windows** (GeekTool
+    style). `./syshud` with no argument uses this.
+  - **`front`** — text floats **above all windows**, including full-screen
+    apps. Launched as `./syshud front`.
 - Overlay is **fully click-through**: not selectable, never intercepts mouse
   events.
 - Default position: **top-right corner** of the main screen, just below the
@@ -20,8 +25,9 @@ Dock icon and no menu bar icon. No paid Apple Developer account required.
 - Format: one compact line — `CPU 23%   GPU 8%   RAM 61%` — refreshed every
   1 second.
 - Stats must closely match Activity Monitor.
-- Control is **pure CLI**: start by running the binary; stop with
-  `pkill syshud`. No visible presence besides the text.
+- Control is **pure CLI**: start with `./syshud` (back mode) or
+  `./syshud front`; stop with `pkill syshud`. No visible presence besides
+  the text.
 - Build with free Apple Command Line Tools only (`swiftc`); no Xcode project,
   no code-signing certificate.
 
@@ -50,7 +56,10 @@ sample.
 
 - Borderless `NSWindow`, `backgroundColor = .clear`, `isOpaque = false`,
   `hasShadow = false`.
-- `level = .screenSaver` — floats above normal and full-screen windows.
+- Window level depends on mode:
+  - `back` (default): `CGWindowLevelForKey(.desktopIconWindow) + 1` — above
+    wallpaper and desktop icons, below every normal window.
+  - `front`: `.screenSaver` — floats above normal and full-screen windows.
 - `ignoresMouseEvents = true` — clicks pass through; text is unselectable.
 - `collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary,
   .ignoresCycle]` — follows every Space, ignored by Mission Control cycling.
@@ -84,7 +93,9 @@ sample.
    a few percent.
 4. Click-through: click a window's button located under the text — the click
    must reach the window.
-5. Spaces: switch desktops and enter a full-screen app — text stays visible.
+5. Layering: in default `back` mode a window dragged over the corner covers
+   the text; in `front` mode switch Spaces and enter a full-screen app — the
+   text stays visible on top.
 6. `pkill syshud` removes the overlay cleanly.
 
 ## Out of scope (v1)
