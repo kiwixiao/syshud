@@ -11,6 +11,27 @@ top-right of your screen:
 - Builds with the free Apple Command Line Tools. No Xcode, no paid Apple
   Developer account.
 
+## Current setup on this Mac (as of 2026-07-05)
+
+- syshud is **installed as a login item** and runs in **front mode** (always
+  on top): the LaunchAgent `~/Library/LaunchAgents/local.syshud.plist` runs
+  `~/monitoring/syshud front` at every login. It shows up in
+  **System Settings → General → Login Items & Extensions**.
+- The cheat sheet (run from `~/monitoring`):
+
+```bash
+./autostart.sh status          # is auto-start installed? is syshud running?
+pkill syshud                   # hide the overlay until next login
+./autostart.sh install front   # (re)start now + keep front mode at login
+./autostart.sh install back    # switch to behind-windows mode instead
+./autostart.sh uninstall       # permanent off: stop + remove login item
+```
+
+- Remember: `pkill syshud` is temporary — the login item brings it back at
+  the next login. `./autostart.sh uninstall` is the permanent stop.
+- Front mode draws over full-screen apps too (e.g. during presentations or
+  video). If that bothers you, switch with `./autostart.sh install back`.
+
 ## Quick start
 
 ```bash
