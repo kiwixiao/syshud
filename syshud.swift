@@ -1,10 +1,38 @@
-// syshud — lightweight system usage overlay for macOS.
-// Build: ./build.sh   Run: ./syshud &   Stop: pkill syshud
-// `./syshud --sample` prints one stats line and exits (test harness).
+// syshud — minimal macOS system usage monitor.
+// Modes: menubar (default) | front | back — stats show in exactly one place.
+// Build: ./build.sh   Start: syshud [mode] &   Stop: pkill syshud
+// Live switch: syshud set menubar|front|back   (toggle = front<->back)
+// `syshud --sample` prints one stats line and exits (test harness).
 
 import AppKit
 import Foundation
 import IOKit
+
+// MARK: - Stats model and formatting
+
+struct Stats {
+    var cpu: Double?
+    var gpu: Double?
+    var ram: Double?
+}
+
+func fmt(_ value: Double?) -> String {
+    guard let value else { return "–" }
+    return "\(Int(min(max(value, 0), 100).rounded()))%"
+}
+
+// v1 display format — used by the overlay and --sample. Do not change.
+func statsLine(_ s: Stats) -> String {
+    "CPU \(fmt(s.cpu))   GPU \(fmt(s.gpu))   RAM \(fmt(s.ram))"
+}
+
+// Compact menu bar title: "12 8 61" (CPU GPU RAM, no % signs).
+func menubarTitle(_ s: Stats) -> String {
+    [s.cpu, s.gpu, s.ram].map { v -> String in
+        guard let v else { return "–" }
+        return "\(Int(min(max(v, 0), 100).rounded()))"
+    }.joined(separator: " ")
+}
 
 // MARK: - Stats sampling
 
@@ -21,6 +49,10 @@ final class StatsSampler {
         host_page_size(mach_host_self(), &size)
         return UInt64(size)
     }()
+
+    func sample() -> Stats {
+        Stats(cpu: cpuPercent(), gpu: gpuPercent(), ram: ramPercent())
+    }
 
     // CPU: aggregate busy/idle tick deltas across all cores — the same
     // kernel counters Activity Monitor reads. First call primes the
@@ -104,33 +136,23 @@ final class StatsSampler {
         }
         return nil
     }
-
-    func line() -> String {
-        "CPU \(fmt(cpuPercent()))   GPU \(fmt(gpuPercent()))   RAM \(fmt(ramPercent()))"
-    }
-
-    private func fmt(_ value: Double?) -> String {
-        guard let value else { return "–" }
-        return "\(Int(min(max(value, 0), 100).rounded()))%"
-    }
 }
 
-// MARK: - Overlay window
+// MARK: - Display mode
 
-enum OverlayMode {
-    case back   // desktop level: above wallpaper/icons, behind normal windows
-    case front  // above everything, including full-screen apps
+enum DisplayMode: String {
+    case menubar
+    case front
+    case back
 }
+
+// MARK: - Overlay window (display only; the coordinator feeds it stats)
 
 final class OverlayController {
-    private let sampler = StatsSampler()
     private let window: NSWindow
     private let label: NSTextField
-    private var timer: Timer?
-    private var mode: OverlayMode
 
-    init(mode: OverlayMode) {
-        self.mode = mode
+    init() {
         label = NSTextField(labelWithString: "CPU –   GPU –   RAM –")
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         label.textColor = .white
@@ -149,47 +171,34 @@ final class OverlayController {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary,
                                      .fullScreenAuxiliary, .ignoresCycle]
         window.contentView = label
-        applyLevel()
-    }
 
-    // Live-switch between front and back (triggered by SIGUSR1).
-    func toggleMode() {
-        mode = (mode == .back) ? .front : .back
-        applyLevel()
-        window.orderFrontRegardless()
-    }
-
-    private func applyLevel() {
-        switch mode {
-        case .back:
-            window.level = NSWindow.Level(
-                rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
-        case .front:
-            window.level = .screenSaver
-        }
-    }
-
-    func start() {
-        _ = sampler.cpuPercent()  // prime CPU tick baseline
-        layout()
-        window.orderFrontRegardless()
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in self?.layout() }
     }
 
-    private func refresh() {
-        label.stringValue = sampler.line()
+    func setLevel(front: Bool) {
+        window.level = front
+            ? .screenSaver
+            : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+    }
+
+    func show() {
+        layout()
+        window.orderFrontRegardless()
+    }
+
+    func hide() {
+        window.orderOut(nil)
+    }
+
+    func update(_ stats: Stats) {
+        label.stringValue = statsLine(stats)
         layout()
     }
 
-    // Pin the window to the top-right of the main screen, just under the
-    // menu bar (visibleFrame already excludes it).
+    // Pin to top-right of the main screen, just under the menu bar
+    // (visibleFrame already excludes it).
     private func layout() {
         label.sizeToFit()
         let size = label.frame.size
@@ -201,63 +210,218 @@ final class OverlayController {
     }
 }
 
+// MARK: - Status item (menu bar mode)
+
+final class StatusItemController: NSObject {
+    private let item: NSStatusItem
+    private let cpuRow: NSMenuItem
+    private let gpuRow: NSMenuItem
+    private let ramRow: NSMenuItem
+    private weak var coordinator: AppCoordinator?
+
+    init(coordinator: AppCoordinator) {
+        self.coordinator = coordinator
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        cpuRow = NSMenuItem(title: "CPU –", action: nil, keyEquivalent: "")
+        gpuRow = NSMenuItem(title: "GPU –", action: nil, keyEquivalent: "")
+        ramRow = NSMenuItem(title: "RAM –", action: nil, keyEquivalent: "")
+        super.init()
+
+        if let button = item.button {
+            button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            button.title = "– – –"
+        }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for row in [cpuRow, gpuRow, ramRow] {
+            row.isEnabled = false
+            menu.addItem(row)
+        }
+        menu.addItem(.separator())
+        menu.addItem(makeItem("Show Overlay (Front)", #selector(goFront)))
+        menu.addItem(makeItem("Show Overlay (Back)", #selector(goBack)))
+        menu.addItem(.separator())
+        menu.addItem(makeItem("Quit syshud", #selector(quitApp), key: "q"))
+        item.menu = menu
+    }
+
+    private func makeItem(_ title: String, _ action: Selector,
+                          key: String = "") -> NSMenuItem {
+        let m = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        m.target = self
+        return m
+    }
+
+    func update(_ stats: Stats) {
+        item.button?.title = menubarTitle(stats)
+        cpuRow.title = "CPU \(fmt(stats.cpu))"
+        gpuRow.title = "GPU \(fmt(stats.gpu))"
+        ramRow.title = "RAM \(fmt(stats.ram))"
+    }
+
+    func remove() {
+        NSStatusBar.system.removeStatusItem(item)
+    }
+
+    @objc private func goFront() { coordinator?.switchTo(.front) }
+    @objc private func goBack() { coordinator?.switchTo(.back) }
+    @objc private func quitApp() { NSApp.terminate(nil) }
+}
+
+// MARK: - Coordinator
+
+final class AppCoordinator {
+    private let sampler = StatsSampler()
+    private var timer: Timer?
+    private var mode: DisplayMode
+    private var overlay: OverlayController?
+    private var statusItem: StatusItemController?
+
+    init(mode: DisplayMode) {
+        self.mode = mode
+    }
+
+    func start() {
+        _ = sampler.cpuPercent()  // prime CPU tick baseline
+        applyMode()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("local.syshud.command"),
+            object: nil, queue: .main) { [weak self] note in
+            self?.handleCommand(note.object as? String ?? "")
+        }
+    }
+
+    func switchTo(_ newMode: DisplayMode) {
+        guard newMode != mode else { return }
+        mode = newMode
+        applyMode()
+    }
+
+    private func handleCommand(_ command: String) {
+        switch command {
+        case "toggle":
+            if mode == .front { switchTo(.back) }
+            else if mode == .back { switchTo(.front) }
+            // menubar mode: nothing to flip — ignored
+        default:
+            if let m = DisplayMode(rawValue: command) { switchTo(m) }
+        }
+    }
+
+    private func applyMode() {
+        switch mode {
+        case .menubar:
+            overlay?.hide()
+            overlay = nil
+            if statusItem == nil {
+                statusItem = StatusItemController(coordinator: self)
+            }
+        case .front, .back:
+            statusItem?.remove()
+            statusItem = nil
+            if overlay == nil { overlay = OverlayController() }
+            overlay?.setLevel(front: mode == .front)
+            overlay?.show()
+        }
+        tick()
+    }
+
+    private func tick() {
+        let stats = sampler.sample()
+        overlay?.update(stats)
+        statusItem?.update(stats)
+    }
+}
+
+// MARK: - CLI helpers
+
+func otherSyshudPids() -> [Int32] {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    task.arguments = ["-x", "syshud"]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    do { try task.run() } catch { return [] }
+    task.waitUntilExit()
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                     encoding: .utf8) ?? ""
+    return out.split(whereSeparator: \.isNewline)
+        .compactMap { Int32($0) }
+        .filter { $0 != getpid() }
+}
+
+func fail(_ message: String, code: Int32) -> Never {
+    FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
+    exit(code)
+}
+
+func sendCommand(_ command: String) -> Never {
+    guard !otherSyshudPids().isEmpty else {
+        fail("syshud: no running instance", code: 1)
+    }
+    DistributedNotificationCenter.default().postNotificationName(
+        Notification.Name("local.syshud.command"), object: command,
+        userInfo: nil, deliverImmediately: true)
+    print("syshud: sent '\(command)' to running instance")
+    exit(0)
+}
+
+let usageText = "usage: syshud [menubar|front|back] | set <mode> | toggle | --sample"
+
 // MARK: - Entry point
 
-var mode = OverlayMode.back            // default: behind windows
-for arg in CommandLine.arguments.dropFirst() {
+var launchMode = DisplayMode.menubar   // default: menu bar mode
+let args = Array(CommandLine.arguments.dropFirst())
+var index = 0
+while index < args.count {
+    let arg = args[index]
     switch arg {
     case "--sample":
         let sampler = StatsSampler()
         _ = sampler.cpuPercent()           // prime CPU tick baseline
         Thread.sleep(forTimeInterval: 1.0) // measure CPU over one second
-        print(sampler.line())
+        print(statsLine(sampler.sample()))
         exit(0)
-    case "back", "--back":
-        mode = .back
-    case "front", "--front":
-        mode = .front
-    case "toggle", "--toggle":
-        // Signal the running overlay to flip front/back; exclude our own
-        // pid — this toggler process is also named "syshud".
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-x", "syshud"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        try? task.run()
-        task.waitUntilExit()
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                         encoding: .utf8) ?? ""
-        let others = out.split(whereSeparator: \.isNewline)
-            .compactMap { Int32($0) }
-            .filter { $0 != getpid() }
-        guard !others.isEmpty else {
-            FileHandle.standardError.write(
-                "syshud: no running overlay to toggle\n".data(using: .utf8)!)
-            exit(1)
+    case "menubar", "--menubar": launchMode = .menubar
+    case "front", "--front": launchMode = .front
+    case "back", "--back": launchMode = .back
+    case "toggle", "--toggle": sendCommand("toggle")
+    case "set":
+        guard index + 1 < args.count,
+              let m = DisplayMode(rawValue: args[index + 1]) else {
+            fail(usageText, code: 2)
         }
-        for pid in others { kill(pid, SIGUSR1) }
-        print("syshud: toggled front/back (pid \(others.map(String.init).joined(separator: ", ")))")
-        exit(0)
+        sendCommand(m.rawValue)
     default:
-        FileHandle.standardError.write(
-            "syshud: unknown argument '\(arg)'\nusage: syshud [back|front|toggle|--sample]\n"
-                .data(using: .utf8)!)
-        exit(2)
+        fail("syshud: unknown argument '\(arg)'\n" + usageText, code: 2)
+    }
+    index += 1
+}
+
+// A running instance wins: forward the mode instead of starting a duplicate.
+if !otherSyshudPids().isEmpty {
+    sendCommand(launchMode.rawValue)
+}
+
+// UI must be created after the app finishes launching — a status item
+// created before app.run() never gets laid out into the menu bar.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let coordinator: AppCoordinator
+    init(mode: DisplayMode) {
+        coordinator = AppCoordinator(mode: mode)
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        coordinator.start()
     }
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.prohibited)   // no Dock icon, no menu bar, no focus
-let controller = OverlayController(mode: mode)
-controller.start()
-
-// SIGUSR1 flips front/back live (sent by `syshud toggle`). The raw C
-// handler must be SIG_IGN so the DispatchSource receives the signal and
-// delivers it on the main queue, where AppKit calls are safe.
-signal(SIGUSR1, SIG_IGN)
-let toggleSignal = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
-toggleSignal.setEventHandler { controller.toggleMode() }
-toggleSignal.resume()
-
+app.setActivationPolicy(.accessory)    // no Dock icon; status item still works
+let delegate = AppDelegate(mode: launchMode)  // global: NSApp.delegate is not retained
+app.delegate = delegate
 app.run()
