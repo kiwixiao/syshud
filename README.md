@@ -23,6 +23,19 @@ brew install kiwixiao/tap/syshud
 brew services start syshud       # optional: auto-start at login (menu bar mode)
 ```
 
+The formula compiles from source on your machine in about 30 seconds — no
+Gatekeeper warnings, since locally built binaries are never quarantined.
+
+Requirements:
+
+- Homebrew (which already ships the Command Line Tools the build needs).
+- macOS 12 or newer.
+- Apple Silicon or Intel. On Intel, the GPU metric depends on what the
+  graphics driver exposes — if `Device Utilization %` is unavailable, GPU
+  shows `–` and CPU/RAM keep working.
+
+To remove: `brew services stop syshud && brew uninstall syshud`.
+
 Or from source:
 
 ```bash
