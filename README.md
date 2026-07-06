@@ -103,6 +103,51 @@ syshud --sample          print one stats line and exit
 - `pkill syshud` stops it until next login; `uninstall` (or
   `brew services stop`) is the permanent off switch.
 
+## Project layout
+
+| Path | What it is |
+|------|------------|
+| `syshud.swift` | The entire app — one file, ~450 lines |
+| `build.sh` | Compiles it: `swiftc -O -o syshud syshud.swift` |
+| `autostart.sh` | Installs/removes the login LaunchAgent (source installs) |
+| `docs/superpowers/specs/` | Design documents (why things are the way they are) |
+| `docs/superpowers/plans/` | Implementation plans with verification steps |
+| github.com/kiwixiao/homebrew-tap | **Separate repo**: `Formula/syshud.rb`, what `brew install kiwixiao/tap/syshud` reads |
+
+## How it works inside (one paragraph)
+
+`StatsSampler` reads the kernel counters. An `AppCoordinator` owns a 1-second
+timer and the current mode; it feeds each sample to either a
+`StatusItemController` (the `NSStatusItem` in the menu bar) or an
+`OverlayController` (a borderless, click-through `NSWindow`) — never both.
+`syshud set <mode>` works from another process via a macOS distributed
+notification named `local.syshud.command`; a freshly launched `syshud` that
+detects a running instance forwards its mode the same way instead of starting
+a duplicate. Two hard-won gotchas: UI must be created in
+`applicationDidFinishLaunching` (a status item made before `app.run()`
+silently never appears), and on macOS 26 status-item windows are hosted by
+Control Center's process, so you can't find them in the window list by owner
+name.
+
+## Making changes and releasing a new version
+
+```bash
+# 1. develop
+vim syshud.swift && ./build.sh && ./syshud --sample   # quick correctness check
+pkill syshud && ./syshud &                            # try it live
+
+# 2. release (from this repo)
+git tag v1.0.1 && git push origin main v1.0.1
+
+# 3. update the formula (in the homebrew-tap repo)
+curl -sL https://github.com/kiwixiao/syshud/archive/refs/tags/v1.0.1.tar.gz | shasum -a 256
+#   edit Formula/syshud.rb: bump the url version and paste the new sha256
+git commit -am "syshud 1.0.1" && git push
+
+# 4. any machine updates with
+brew update && brew upgrade syshud
+```
+
 ## How the numbers are computed
 
 - **CPU** — busy ÷ total tick deltas across all cores
