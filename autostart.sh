@@ -1,6 +1,6 @@
 #!/bin/bash
 # Manage syshud login auto-start (per-user LaunchAgent, no admin needed).
-# Usage: ./autostart.sh install [back|front]   install + start now (default: back)
+# Usage: ./autostart.sh install [menubar|back|front]   install + start now (default: menubar)
 #        ./autostart.sh uninstall              stop + remove auto-start
 #        ./autostart.sh status                 show agent and process state
 set -euo pipefail
@@ -13,9 +13,9 @@ GUI_DOMAIN="gui/$(id -u)"
 
 case "${1:-}" in
 install)
-    MODE="${2:-back}"
-    if [[ "$MODE" != "back" && "$MODE" != "front" ]]; then
-        echo "mode must be 'back' or 'front'" >&2; exit 2
+    MODE="${2:-menubar}"
+    if [[ "$MODE" != "menubar" && "$MODE" != "back" && "$MODE" != "front" ]]; then
+        echo "mode must be 'menubar', 'back' or 'front'" >&2; exit 2
     fi
     if [[ ! -x "$BIN" ]]; then
         echo "no ./syshud binary found — run ./build.sh first" >&2; exit 2
@@ -61,7 +61,7 @@ status)
     fi
     ;;
 *)
-    echo "usage: ./autostart.sh install [back|front] | uninstall | status" >&2
+    echo "usage: ./autostart.sh install [menubar|back|front] | uninstall | status" >&2
     exit 2
     ;;
 esac
